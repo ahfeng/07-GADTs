@@ -80,6 +80,7 @@ Here, again, are the invariants for red-black trees:
   3. From each node, every path to a leaf has the same number of black nodes.
 
   4. Red nodes have black children.
+Code should not type-check if any of these are not satisfied.
 
 Tree Structure
 --------------
@@ -92,20 +93,43 @@ color (red `R` or black `B`).  For brevity, we will abbreviate the standard
 tree constructors `Empty` and `Branch` as `E` and `N`.
 -}
 
-data Color where
-  R :: Color
-  B :: Color
+data Color where -- use in types as a kind
+  Red :: Color
+  Black :: Color
 
-data T (a :: Type) where
-  E :: T a
-  N :: Color -> T a -> a -> T a -> T a
+-- datatype to connect a runtime value with a data index
+-- Lets us name a variable containing a color
+data SColor (c :: Color) :: Type where
+  R :: SColor Red
+  B :: SColor Black
+
+(%==) :: SColor c1 -> SColor c2 -> Bool
+R %== R = True
+B %== B = True
+_ %== _ = False
+
+-- data constructors have to start with a capital letter
+data Nat = O | S Nat
+type family Incr (n :: Nat) (c :: Color) :: Nat where
+  Incr n Black = S n
+  Incr n Red = n
+
+data T (n :: Nat) (c :: Color) (a :: Type) where
+  E :: T O Black a
+  N :: (Valid c c1 c2) => SColor c -> T n c1 a -> a -> T n c2 a -> T (Incr n c) c a
+
+class Valid c c1 c2 -- enforce RBT 4 invariant
+instance Valid Red Black Black
+instance Valid Black c1 c2
+
 
 {-
 We define the RBT type by distinguishing the root of the tree.
 -}
 
 data RBT a where
-  Root :: T a -> RBT a
+  Root :: T n Black a -> RBT a 
+-- Here, Black is being used as a typechecker. If we want to use it as a value, we need to use SColor
 
 {-
 Type class instances
@@ -116,20 +140,29 @@ Type class instances
 
 deriving instance Show Color
 
-deriving instance Show a => Show (T a)
+deriving instance Show (SColor c)
+
+deriving instance Show a => Show (T n c a)
 
 deriving instance Show a => Show (RBT a)
 
 -- Eq instances
 
 instance Eq Color where
+  Red == Red = True
+  Black == Black = True
+  _ == _ = False
+
+instance Eq (SColor c) where
   R == R = True
   B == B = True
-  _ == _ = False
+-- Eq compares things of the same type, so we cannot compare R and B, since they are different types. 
+-- This means that the above instance is exhaustive, and we don't need to worry about the other cases.
+-- This also means that this is a useless equality function, check (%==)
 
 -- Foldable instances
 
-deriving instance Foldable T
+deriving instance Foldable (T n c)
 
 deriving instance Foldable RBT
 
@@ -159,7 +192,7 @@ Every tree has a color, determined by the following function.
 -}
 
 -- | access the color of the tree
-color :: T a -> Color
+color :: T n c a -> SColor c
 color (N c _ _ _) = c
 color E = B
 
@@ -170,9 +203,9 @@ same for every path in the tree, so we only need to look at one side.
 -}
 
 -- | calculate the black height of the tree
-blackHeight :: T a -> Int
+blackHeight :: T n c a -> Int
 blackHeight E = 1
-blackHeight (N c a _ _) = blackHeight a + (if c == B then 1 else 0)
+blackHeight (N c a _ _) = blackHeight a + (if c %== B then 1 else 0)
 
 {-
 Implementation
@@ -221,24 +254,24 @@ Here is one with a red Root (violates invariant 2). We want this definition to
  be rejected by the type checker.
 -}
 
-bad1 :: RBT Int
-bad1 = Root $ N R (N B E 1 E) 2 (N B E 3 E)
+-- bad1 :: RBT Int
+-- bad1 = Root $ N R (N B E 1 E) 2 (N B E 3 E)
 
 {-
 Here's one that violates the black height requirement (invariant 3). We want
  this definition to be rejected by the type checker.
 -}
 
-bad2 :: RBT Int
-bad2 = Root $ N B (N R E 1 E) 2 (N B E 3 E)
+-- bad2 :: RBT Int
+-- bad2 = Root $ N B (N R E 1 E) 2 (N B E 3 E)
 
 {-
 Here's a red-black tree that has a red node with a red child (violates
  invariant 4). We want this definition to be rejected by the type checker.
 -}
 
-bad3 :: RBT Int
-bad3 = Root $ N B (N R (N R E 1 E) 2 (N R E 3 E)) 4 E
+-- bad3 :: RBT Int
+-- bad3 = Root $ N B (N R (N R E 1 E) 2 (N R E 3 E)) 4 E
 
 {-
 Here's a red-black tree that isn't a binary search tree (i.e. the *values*
@@ -308,7 +341,7 @@ isRootBlack (Root t) = color t == B
 consistentBlackHeight :: RBT a -> Bool
 consistentBlackHeight (Root t) = aux t
   where
-    aux :: T a -> Bool
+    aux :: T n c a -> Bool
     aux (N _ a _ b) = blackHeight a == blackHeight b && aux a && aux b
     aux E = True
 
@@ -319,8 +352,8 @@ consistentBlackHeight (Root t) = aux t
 noRedRed :: RBT a -> Bool
 noRedRed (Root t) = aux t
   where
-    aux :: T a -> Bool
-    aux (N R a _ b) = color a == B && color b == B && aux a && aux b
+    aux :: T n c a -> Bool
+    aux (N R a _ b) = color a %== B && color b %== B && aux a && aux b
     aux (N B a _ b) = aux a && aux b
     aux E = True
 
@@ -360,8 +393,11 @@ type A = Small Int
 
 prop_Valid :: RBT A -> Property
 prop_Valid tree =
-  counterexample "RB2" (isRootBlack tree)
-    .&&. counterexample "RB3" (consistentBlackHeight tree)
+  -- We should not be able to construct a tree with a red root, so the 
+  -- `isRootBlack` property is redundant.
+  -- counterexample "RB2" (isRootBlack tree)
+    -- .&&. 
+    counterexample "RB3" (consistentBlackHeight tree)
     .&&. counterexample "RB4" (noRedRed tree)
     .&&. counterexample "BST" (isBST tree)
 
@@ -382,18 +418,18 @@ instance (Ord a, Arbitrary a) => Arbitrary (RBT a) where
   shrink (Root E) = []
   shrink (Root (N _ l _ r)) = [hide l, hide r]
     where
-      hide :: T a -> RBT a
+      hide :: T n c a -> RBT a
       hide E = Root E
-      hide n@N {} = blacken n
+      hide (N c a y b) = blacken (HN c a y b)
 
 {-
 Implementation
 --------------------
 -}
 
-blacken :: T a -> RBT a
-blacken (N _ l v r) = Root (N B l v r)
-blacken E = error "only blacken result of ins"
+blacken :: HT n a -> RBT a
+blacken (HN _ l v r) = Root (N B l v r)
+-- blacken E = error "only blacken result of ins"
 
 empty :: RBT a
 empty = Root E
@@ -401,7 +437,7 @@ empty = Root E
 member :: Ord a => a -> RBT a -> Bool
 member x0 (Root t) = aux x0 t
   where
-    aux :: Ord a => a -> T a -> Bool
+    aux :: Ord a => a -> T n c a -> Bool
     aux x E = False
     aux x (N _ a y b)
       | x < y = aux x a
@@ -411,12 +447,16 @@ member x0 (Root t) = aux x0 t
 insert :: Ord a => a -> RBT a -> RBT a
 insert x (Root t) = blacken (ins x t)
 
-ins :: Ord a => a -> T a -> T a
-ins x E = N R E x E
+data HT (n :: Nat) (a :: Type) where
+  HN :: SColor c -> T n c1 a -> a -> T n c2 a -> HT (Incr n c) a
+
+-- This recursive insert preserves black height
+ins :: Ord a => a -> T n c a -> HT n a
+ins x E = HN R E x E
 ins x s@(N c a y b)
   | x < y = balanceL c (ins x a) y b
   | x > y = balanceR c a y (ins x b)
-  | otherwise = s
+  | otherwise = HN c a y b
 
 {-
 The original `balance` function looked like this:
@@ -446,15 +486,25 @@ inserted on the left, then we should balance on the left. If we inserted on
 the right, then we should balance on the right.
 -}
 
-balanceL :: Color -> T a -> a -> T a -> T a
-balanceL B (N R (N R a x b) y c) z d = N R (N B a x b) y (N B c z d)
-balanceL B (N R a x (N R b y c)) z d = N R (N B a x b) y (N B c z d)
-balanceL col a x b = N col a x b
+balanceL :: SColor c1 -> HT n a -> a -> T n c a -> HT (Incr n c1) a
+balanceL B (HN R (N R a x b) y c) z d = HN R (N B a x b) y (N B c z d)
+balanceL B (HN R a x (N R b y c)) z d = HN R (N B a x b) y (N B c z d)
+balanceL col a@(HN B a1 y a2) x b = HN col (N B a1 y a2) x b
+balanceL col a@(HN R a1@E y a2@E) x b = HN col (N R a1 y a2) x b
+balanceL col a@(HN R a1@(N B _ _ _) y a2@(N B _ _ _)) x b
+     = HN col (N R a1 y a2) x b
+balanceL col a@(HN R a1 y a2) x b = error "impossible" -- blackHeight invariant violated
 
-balanceR :: Color -> T a -> a -> T a -> T a
-balanceR B a x (N R (N R b y c) z d) = N R (N B a x b) y (N B c z d)
-balanceR B a x (N R b y (N R c z d)) = N R (N B a x b) y (N B c z d)
-balanceR col a x b = N col a x b
+balanceR :: SColor c1 -> T n c a -> a -> HT n a -> HT (Incr n c1) a
+balanceR B a x (HN R (N R b y c) z d) = HN R (N B a x b) y (N B c z d)
+balanceR B a x (HN R b y (N R c z d)) = HN R (N B a x b) y (N B c z d)
+balanceR col a x b@(HN B a1 y a2) = HN col a x (N B a1 y a2)
+balanceR col a x b@(HN R a1@E y a2@E) = HN col a x (N R a1 y a2)
+balanceR col a x b@(HN R a1@(N B _ _ _) y a2@(N B _ _ _))
+     = HN col a x (N R a1 y a2)
+balanceR col a x b@(HN R a1 y a2) = error "impossible" -- blackHeight invariant violated
+
+
 
 {-
 This version is slightly more efficient than the previous version and will
